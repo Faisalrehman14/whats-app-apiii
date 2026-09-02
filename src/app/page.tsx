@@ -1,7 +1,5 @@
-"use client";
+import { redirect } from 'next/navigation'
 
-import InboxApp from "@/components/InboxApp";
-
-export default function HomePage() {
-  return <InboxApp />;
+export default function RootPage() {
+  redirect('/dashboard')
 }
