@@ -25,6 +25,8 @@ Open http://127.0.0.1:3000 → **Settings** and paste the Cloud API credentials.
 
 Set these in Railway → Variables:
 
+- `APP_PIN` — operator PIN for the inbox (recommended in production)
+- `SESSION_SECRET` — random string for cookie signing
 - `WHATSAPP_ACCESS_TOKEN`
 - `WHATSAPP_PHONE_NUMBER_ID`
 - `WHATSAPP_WABA_ID`

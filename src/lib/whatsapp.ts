@@ -149,7 +149,82 @@ export async function listTemplates(): Promise<WabaTemplate[]> {
   return data.data ?? [];
 }
 
-export function extractInboundText(message: Record<string, unknown>) {
+export async function sendMedia(
+  to: string,
+  kind: "image" | "video" | "audio" | "document",
+  mediaId: string,
+  extra?: { caption?: string; filename?: string },
+) {
+  const config = await getConfig();
+  const payload: Record<string, unknown> = {
+    messaging_product: "whatsapp",
+    recipient_type: "individual",
+    to,
+    type: kind,
+    [kind]: {
+      id: mediaId,
+      ...(extra?.caption ? { caption: extra.caption } : {}),
+      ...(kind === "document" && extra?.filename ? { filename: extra.filename } : {}),
+    },
+  };
+  return graph<SendTextResult>(`${config.phoneNumberId}/messages`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function uploadMedia(file: Blob, mime: string, filename: string) {
+  const config = await getConfig();
+  if (!config.accessToken || !config.phoneNumberId) {
+    throw new WhatsAppApiError("Missing WhatsApp access token", 400, null);
+  }
+  const form = new FormData();
+  form.append("messaging_product", "whatsapp");
+  form.append("file", file, filename);
+  form.append("type", mime);
+  const url = `https://graph.facebook.com/${config.graphVersion}/${config.phoneNumberId}/media`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${config.accessToken}` },
+    body: form,
+    cache: "no-store",
+  });
+  const json = (await res.json().catch(() => null)) as { id?: string; error?: { message?: string } } | null;
+  if (!res.ok || !json?.id) {
+    throw new WhatsAppApiError(json?.error?.message || `Media upload ${res.status}`, res.status, json);
+  }
+  return json.id;
+}
+
+export async function downloadMedia(mediaId: string) {
+  const meta = await graph<{ url?: string; mime_type?: string; file_size?: number }>(mediaId);
+  if (!meta.url) throw new WhatsAppApiError("Media URL missing", 404, meta);
+  const config = await getConfig();
+  const res = await fetch(meta.url, {
+    headers: {
+      Authorization: `Bearer ${config.accessToken}`,
+      "User-Agent": "DeftInbox/1.0",
+    },
+    cache: "no-store",
+  });
+  if (!res.ok) throw new WhatsAppApiError("Media download failed", res.status, null);
+  const body = await res.arrayBuffer();
+  return {
+    body,
+    mimeType: meta.mime_type || res.headers.get("content-type") || "application/octet-stream",
+    contentLength: String(body.byteLength),
+  };
+}
+
+export type ParsedInbound = {
+  type: string;
+  body: string;
+  mediaId?: string;
+  mimeType?: string;
+  fileName?: string;
+};
+
+export function extractInboundText(message: Record<string, unknown>): ParsedInbound {
   const type = String(message.type ?? "unknown");
   if (type === "text") {
     const text = message.text as { body?: string } | undefined;
@@ -168,12 +243,29 @@ export function extractInboundText(message: Record<string, unknown>) {
       interactive?.button_reply?.title || interactive?.list_reply?.title;
     return { type, body: title ?? "[interactive]" };
   }
-  if (type === "image") return { type, body: "[image]" };
-  if (type === "audio") return { type, body: "[audio]" };
-  if (type === "video") return { type, body: "[video]" };
-  if (type === "document") return { type, body: "[document]" };
-  if (type === "sticker") return { type, body: "[sticker]" };
-  if (type === "location") return { type, body: "[location]" };
+  if (["image", "video", "audio", "document", "sticker", "voice"].includes(type)) {
+    const media = (message[type] || message.audio) as
+      | { id?: string; caption?: string; filename?: string; mime_type?: string }
+      | undefined;
+    const label =
+      type === "image"
+        ? "📷 Photo"
+        : type === "video"
+          ? "🎬 Video"
+          : type === "audio" || type === "voice"
+            ? "🎤 Voice"
+            : type === "document"
+              ? `📄 ${media?.filename || "Document"}`
+              : "Sticker";
+    return {
+      type: type === "voice" ? "audio" : type,
+      body: media?.caption || label,
+      mediaId: media?.id,
+      mimeType: media?.mime_type,
+      fileName: media?.filename,
+    };
+  }
+  if (type === "location") return { type, body: "📍 Location" };
   if (type === "reaction") {
     const reaction = message.reaction as { emoji?: string } | undefined;
     return { type, body: reaction?.emoji ?? "[reaction]" };

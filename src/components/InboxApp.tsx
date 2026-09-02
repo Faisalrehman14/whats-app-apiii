@@ -1,127 +1,149 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import LoginScreen from "@/components/LoginScreen";
 import { formatRemaining, windowOpen, windowRemaining } from "@/lib/safety";
-
-type Conversation = {
-  id: string;
-  waId: string;
-  name: string | null;
-  optedIn: boolean;
-  blocked: boolean;
-  lastInboundAt: string | null;
-  lastOutboundAt: string | null;
-  unreadCount: number;
-  lastMessage: {
-    body: string | null;
-    direction: string;
-    status: string;
-    createdAt: string;
-  } | null;
-};
-
-type Message = {
-  id: string;
-  wamid: string | null;
-  direction: string;
-  type: string;
-  body: string | null;
-  templateName: string | null;
-  status: string;
-  errorMessage: string | null;
-  createdAt: string;
-};
-
-type Contact = Conversation & { messages: Message[] };
-
-type SettingsPayload = {
-  configured: boolean;
-  config: {
-    phoneNumberId: string;
-    wabaId: string;
-    graphVersion: string;
-    verifyToken: string;
-    dailyNewRecipientCap: number;
-    hasAccessToken: boolean;
-    hasAppSecret: boolean;
-  };
-  health: {
-    verified_name?: string;
-    display_phone_number?: string;
-    quality_rating?: string;
-    whatsapp_business_manager_messaging_limit?: string;
-    throughput?: { level?: string };
-  } | null;
-  templates: { name: string; status: string; category: string; language: string }[];
-  apiError: string | null;
-  recentEvents: { id: string; kind: string; detail: string; createdAt: string }[];
-};
+import { dayLabel, formatClock, formatListTime, initials, sameDay } from "@/lib/time";
+import type { Contact, Conversation, Message, SettingsPayload } from "@/types/inbox";
 
 function qualityColor(rating?: string) {
-  if (rating === "GREEN") return "bg-emerald-500";
+  if (rating === "GREEN") return "bg-emerald-400";
   if (rating === "YELLOW") return "bg-amber-400";
   if (rating === "RED") return "bg-rose-500";
   return "bg-slate-500";
 }
 
-function timeLabel(value?: string | null) {
-  if (!value) return "";
-  return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+function Tick({ status }: { status: string }) {
+  if (status === "failed") return <span className="text-rose-300">!</span>;
+  if (status === "read") return <span className="text-sky-300">✓✓</span>;
+  if (status === "delivered") return <span className="text-white/50">✓✓</span>;
+  return <span className="text-white/40">✓</span>;
+}
+
+function MediaBody({ message }: { message: Message }) {
+  const src =
+    message.previewUrl ||
+    (message.mediaId ? `/api/media/${encodeURIComponent(message.mediaId)}` : null);
+  if ((message.type === "image" || message.type === "sticker") && src) {
+    return (
+      <>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={src} alt="" className="mb-1 max-h-72 w-full rounded-md object-cover" />
+        {message.body && !message.body.startsWith("📷") && !message.body.startsWith("Sticker") ? (
+          <p className="whitespace-pre-wrap break-words leading-5">{message.body}</p>
+        ) : null}
+      </>
+    );
+  }
+  if (message.type === "video" && src) {
+    return <video src={src} controls playsInline className="mb-1 max-h-72 w-full rounded-md" />;
+  }
+  if ((message.type === "audio" || message.type === "voice") && src) {
+    return <audio src={src} controls className="my-1 w-56 max-w-full" />;
+  }
+  if (message.type === "document" && src) {
+    return (
+      <a href={src} className="block py-1 underline" download={message.fileName || true}>
+        📄 {message.fileName || message.body || "Document"}
+      </a>
+    );
+  }
+  return <p className="whitespace-pre-wrap break-words leading-5">{message.body}</p>;
 }
 
 export default function InboxApp() {
+  const [auth, setAuth] = useState<"loading" | "login" | "ready">("loading");
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [contact, setContact] = useState<Contact | null>(null);
   const [settings, setSettings] = useState<SettingsPayload | null>(null);
   const [composer, setComposer] = useState("");
+  const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [loadingList, setLoadingList] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
   const [showNew, setShowNew] = useState(false);
-  const [tick, setTick] = useState(0);
   const [installHint, setInstallHint] = useState(false);
+  const [attachOpen, setAttachOpen] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [recSeconds, setRecSeconds] = useState(0);
+  const [tick, setTick] = useState(0);
+  const seenUnread = useRef(0);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const photoRef = useRef<HTMLInputElement>(null);
+  const cameraRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLInputElement>(null);
+  const videoCamRef = useRef<HTMLInputElement>(null);
+  const docRef = useRef<HTMLInputElement>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
 
   const loadConversations = useCallback(async () => {
     const res = await fetch("/api/conversations", { cache: "no-store" });
+    if (res.status === 401) {
+      setAuth("login");
+      return;
+    }
     const data = await res.json();
-    setConversations(data.conversations ?? []);
+    const next = (data.conversations ?? []) as Conversation[];
+    const unread = next.reduce((sum, item) => sum + item.unreadCount, 0);
+    if (unread > seenUnread.current && typeof Notification !== "undefined" && Notification.permission === "granted") {
+      const newest = next.find((item) => item.unreadCount > 0);
+      if (newest) {
+        new Notification(newest.name || newest.waId, {
+          body: newest.lastMessage?.body || "New WhatsApp message",
+          icon: "/icon-192.png",
+        });
+      }
+    }
+    seenUnread.current = unread;
+    setConversations(next);
+    setLoadingList(false);
   }, []);
 
   const loadSettings = useCallback(async () => {
     const res = await fetch("/api/settings", { cache: "no-store" });
+    if (!res.ok) return;
     const data = (await res.json()) as SettingsPayload;
     setSettings(data);
-    if (!data.configured) setShowSettings(true);
   }, []);
 
   const loadThread = useCallback(async (id: string) => {
     const res = await fetch(`/api/conversations/${id}`, { cache: "no-store" });
     const data = await res.json();
-    setContact(data.contact);
+    if (data.contact) setContact(data.contact);
   }, []);
 
   useEffect(() => {
+    fetch("/api/auth/me")
+      .then((res) => res.json())
+      .then((data) => setAuth(data.required && !data.authenticated ? "login" : "ready"))
+      .catch(() => setAuth("ready"));
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js").catch(() => {});
     }
     const standalone =
       window.matchMedia("(display-mode: standalone)").matches ||
-      ("standalone" in navigator && Boolean((navigator as Navigator & { standalone?: boolean }).standalone));
+      Boolean((navigator as Navigator & { standalone?: boolean }).standalone);
     setInstallHint(!standalone);
+  }, []);
+
+  useEffect(() => {
+    if (auth !== "ready") return;
     loadConversations();
     loadSettings();
     const poll = setInterval(() => {
       loadConversations();
       if (activeId) loadThread(activeId);
-    }, 4000);
+    }, 3500);
     const clock = setInterval(() => setTick((n) => n + 1), 30000);
     return () => {
       clearInterval(poll);
       clearInterval(clock);
     };
-  }, [activeId, loadConversations, loadSettings, loadThread]);
+  }, [auth, activeId, loadConversations, loadSettings, loadThread]);
 
   useEffect(() => {
     if (activeId) loadThread(activeId);
@@ -131,16 +153,50 @@ export default function InboxApp() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [contact?.messages.length]);
 
+  useEffect(() => {
+    if (!recording) {
+      setRecSeconds(0);
+      return;
+    }
+    const clock = setInterval(() => setRecSeconds((n) => n + 1), 1000);
+    return () => clearInterval(clock);
+  }, [recording]);
+
   const remaining = useMemo(
     () => windowRemaining(contact?.lastInboundAt),
-    // tick forces a recompute of remaining time
     [contact?.lastInboundAt, tick],
   );
   const canFreeText = windowOpen(contact?.lastInboundAt);
+  const chatOpen = Boolean(activeId);
+  const unreadTotal = conversations.reduce((sum, item) => sum + item.unreadCount, 0);
+  const filtered = conversations.filter((item) => {
+    const hay = `${item.name || ""} ${item.waId} ${item.lastMessage?.body || ""}`.toLowerCase();
+    return hay.includes(query.toLowerCase().trim());
+  });
 
   async function send(type: "text" | "template", extra?: { to?: string; templateName?: string }) {
+    const text = composer.trim();
+    if (type === "text" && !text) return;
     setBusy(true);
     setError(null);
+    const optimistic: Message | null =
+      type === "text" && contact
+        ? {
+            id: `local-${Date.now()}`,
+            wamid: null,
+            direction: "outbound",
+            type: "text",
+            body: text,
+            templateName: null,
+            status: "queued",
+            errorMessage: null,
+            createdAt: new Date().toISOString(),
+          }
+        : null;
+    if (optimistic) {
+      setContact({ ...contact!, messages: [...contact!.messages, optimistic] });
+      setComposer("");
+    }
     try {
       const res = await fetch("/api/messages", {
         method: "POST",
@@ -148,20 +204,134 @@ export default function InboxApp() {
         body: JSON.stringify({
           to: extra?.to || contact?.waId,
           type,
-          text: composer,
+          text,
           templateName: extra?.templateName,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Send failed");
-      setComposer("");
+      if (type === "template") setComposer("");
       await loadConversations();
       if (activeId) await loadThread(activeId);
+      inputRef.current?.focus();
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setBusy(false);
     }
+  }
+
+  async function sendFile(file: File, kind?: string) {
+    if (!contact) return;
+    if (!canFreeText) {
+      setError("24-hour window closed. Customer must message first, then you can send photos, video, and voice.");
+      return;
+    }
+    const type = kind || (file.type.startsWith("image/") ? "image" : file.type.startsWith("video/") ? "video" : file.type.startsWith("audio/") ? "audio" : "document");
+    const label =
+      type === "image" ? "📷 Photo" : type === "video" ? "🎬 Video" : type === "audio" ? "🎤 Voice" : `📄 ${file.name}`;
+    const previewUrl = URL.createObjectURL(file);
+    const caption = composer.trim();
+    setContact({
+      ...contact,
+      messages: [
+        ...contact.messages,
+        {
+          id: `local-${Date.now()}`,
+          wamid: null,
+          direction: "outbound",
+          type,
+          body: caption || label,
+          templateName: null,
+          mediaId: null,
+          previewUrl,
+          status: "queued",
+          errorMessage: null,
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    });
+    setBusy(true);
+    setError(null);
+    setAttachOpen(false);
+    setComposer("");
+    const form = new FormData();
+    form.append("to", contact.waId);
+    form.append("file", file);
+    form.append("kind", type);
+    if (caption) form.append("caption", caption);
+    try {
+      const res = await fetch("/api/media", { method: "POST", body: form });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not send media");
+      URL.revokeObjectURL(previewUrl);
+      await loadConversations();
+      if (activeId) await loadThread(activeId);
+    } catch (err) {
+      setError((err as Error).message);
+      setContact((current) =>
+        current
+          ? {
+              ...current,
+              messages: current.messages.map((message) =>
+                message.previewUrl === previewUrl
+                  ? { ...message, status: "failed", errorMessage: (err as Error).message }
+                  : message,
+              ),
+            }
+          : current,
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function startRecording() {
+    if (!canFreeText) {
+      setError("Window closed — wait for the customer to message before sending voice notes.");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mime = MediaRecorder.isTypeSupported("audio/ogg;codecs=opus")
+        ? "audio/ogg;codecs=opus"
+        : MediaRecorder.isTypeSupported("audio/mp4")
+          ? "audio/mp4"
+          : MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+            ? "audio/webm;codecs=opus"
+            : "";
+      const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      chunksRef.current = [];
+      recorder.ondataavailable = (event) => {
+        if (event.data.size) chunksRef.current.push(event.data);
+      };
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((track) => track.stop());
+        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
+        if (blob.size < 800) {
+          setError("Voice note too short — tap the mic, speak, then tap again to send.");
+          return;
+        }
+        const ext = blob.type.includes("ogg") ? "ogg" : blob.type.includes("mp4") ? "m4a" : "webm";
+        await sendFile(new File([blob], `voice.${ext}`, { type: blob.type || "audio/webm" }), "audio");
+      };
+      recorderRef.current = recorder;
+      recorder.start();
+      setRecording(true);
+      setAttachOpen(false);
+    } catch {
+      setError("Microphone permission is required for voice notes. Allow mic in the browser, then tap 🎤 again.");
+    }
+  }
+
+  function stopRecording() {
+    recorderRef.current?.stop();
+    setRecording(false);
+  }
+
+  function toggleRecording() {
+    if (recording) stopRecording();
+    else startRecording();
   }
 
   async function toggleOptIn() {
@@ -175,116 +345,159 @@ export default function InboxApp() {
     await loadConversations();
   }
 
-  const chatOpen = Boolean(activeId);
+  async function logout() {
+    await fetch("/api/auth/logout", { method: "POST" });
+    setAuth("login");
+  }
+
+  function requestNotifications() {
+    if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+  }
+
+  if (auth === "loading") {
+    return <div className="grid min-h-[100dvh] place-items-center bg-[#0b141a] text-[#8696a0]">Loading inbox…</div>;
+  }
+  if (auth === "login") {
+    return <LoginScreen onUnlocked={() => setAuth("ready")} />;
+  }
 
   return (
     <div className="h-[100dvh] overflow-hidden bg-[#0b141a] text-[#e9edef]">
       <div className="flex h-full">
         <aside
-          className={`${chatOpen ? "hidden md:flex" : "flex"} w-full shrink-0 flex-col border-r border-[#2a3942] bg-[#111b21] md:w-[360px]`}
+          className={`${chatOpen ? "hidden md:flex" : "flex"} w-full shrink-0 flex-col border-r border-[#2a3942] bg-[#111b21] md:w-[380px]`}
         >
-          <header className="flex items-center justify-between border-b border-[#2a3942] px-4 py-3">
+          <header className="flex items-center justify-between px-4 pb-2 pt-4">
             <div>
-              <p className="text-sm font-semibold">Deft Inbox</p>
-              <p className="text-xs text-[#8696a0]">Official Cloud API · number-safe</p>
+              <p className="text-[17px] font-semibold">Deft Inbox</p>
+              <p className="text-xs text-[#8696a0]">
+                {settings?.health?.display_phone_number || "Cloud API"}
+                {unreadTotal ? ` · ${unreadTotal} unread` : ""}
+              </p>
             </div>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setShowNew(true)}
-                className="rounded-full bg-[#00a884] px-3 py-1.5 text-xs font-semibold text-[#111b21]"
-              >
+            <div className="flex items-center gap-2">
+              <span className={`h-2.5 w-2.5 rounded-full ${qualityColor(settings?.health?.quality_rating)}`} />
+              <button onClick={() => setShowNew(true)} className="rounded-full bg-[#00a884] px-3 py-1.5 text-xs font-semibold text-[#111b21]">
                 New
               </button>
-              <button
-                onClick={() => setShowSettings(true)}
-                className="rounded-full bg-[#202c33] px-3 py-1.5 text-xs"
-              >
+              <button onClick={() => setShowSettings(true)} className="rounded-full bg-[#202c33] px-3 py-1.5 text-xs">
                 Settings
               </button>
             </div>
           </header>
 
           {installHint && (
-            <p className="border-b border-[#2a3942] bg-[#005c4b]/40 px-4 py-2 text-xs text-[#d1f4ea]">
-              Phone par app banane ke liye Chrome menu → <b>Add to Home screen</b> (iPhone: Share → Add to Home Screen).
-              <button className="ml-2 underline" onClick={() => setInstallHint(false)}>
-                Hide
-              </button>
-            </p>
+            <button
+              onClick={() => {
+                requestNotifications();
+                setInstallHint(false);
+              }}
+              className="mx-4 mb-2 rounded-xl bg-[#005c4b] px-3 py-2 text-left text-xs text-[#d1f4ea]"
+            >
+              Install on phone: Chrome ⋮ → Add to Home screen. Tap to hide.
+            </button>
           )}
 
-          <QualityBar settings={settings} />
+          <div className="px-4 pb-3">
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search or start a chat"
+              className="w-full rounded-lg bg-[#202c33] px-3 py-2 text-sm outline-none placeholder:text-[#8696a0]"
+            />
+          </div>
 
           <div className="flex-1 overflow-y-auto">
-            {conversations.length === 0 ? (
-              <p className="px-4 py-8 text-sm text-[#8696a0]">
-                No chats yet. Incoming WhatsApp messages appear here after the webhook is connected.
-              </p>
+            {loadingList ? (
+              <p className="px-4 py-8 text-sm text-[#8696a0]">Syncing conversations…</p>
+            ) : filtered.length === 0 ? (
+              <div className="px-6 py-12 text-center text-sm text-[#8696a0]">
+                <p className="text-base text-[#e9edef]">No chats yet</p>
+                <p className="mt-2">Ask a customer to message +44 7882 771582, or start with an approved template.</p>
+              </div>
             ) : (
-              conversations.map((item) => (
+              filtered.map((item) => (
                 <button
                   key={item.id}
                   onClick={() => setActiveId(item.id)}
-                  className={`flex w-full items-start gap-3 border-b border-[#2a3942] px-4 py-3 text-left ${
+                  className={`flex w-full items-center gap-3 px-4 py-3 text-left ${
                     activeId === item.id ? "bg-[#2a3942]" : "hover:bg-[#202c33]"
                   }`}
                 >
-                  <div className="grid h-10 w-10 place-items-center rounded-full bg-[#00a884]/20 text-sm font-semibold text-[#00a884]">
-                    {(item.name || item.waId).slice(0, 2).toUpperCase()}
+                  <div className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-[#00a884]/20 text-sm font-semibold text-[#00a884]">
+                    {initials(item.name, item.waId)}
                   </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between">
-                      <p className="truncate text-sm font-medium">{item.name || item.waId}</p>
-                      <span className="text-[11px] text-[#8696a0]">
-                        {timeLabel(item.lastMessage?.createdAt)}
+                  <div className="min-w-0 flex-1 border-b border-[#2a3942] pb-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="truncate text-[15px] font-medium">{item.name || `+${item.waId}`}</p>
+                      <span className={`text-[11px] ${item.unreadCount ? "text-[#00a884]" : "text-[#8696a0]"}`}>
+                        {formatListTime(item.lastMessage?.createdAt)}
                       </span>
                     </div>
-                    <p className="truncate text-xs text-[#8696a0]">
-                      {item.lastMessage?.body || "No messages"}
-                    </p>
+                    <div className="mt-0.5 flex items-center justify-between gap-2">
+                      <p className="truncate text-[13px] text-[#8696a0]">
+                        {item.lastMessage?.direction === "outbound" ? "You: " : ""}
+                        {item.lastMessage?.body || "Tap to open"}
+                      </p>
+                      {item.unreadCount > 0 && (
+                        <span className="rounded-full bg-[#00a884] px-1.5 py-0.5 text-[11px] font-semibold text-[#111b21]">
+                          {item.unreadCount}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  {item.unreadCount > 0 && (
-                    <span className="mt-1 rounded-full bg-[#00a884] px-2 py-0.5 text-[11px] font-semibold text-[#111b21]">
-                      {item.unreadCount}
-                    </span>
-                  )}
                 </button>
               ))
             )}
           </div>
         </aside>
 
-        <section className={`${chatOpen ? "flex" : "hidden md:flex"} min-w-0 flex-1 flex-col`}>
+        <section className={`${chatOpen ? "flex" : "hidden md:flex"} min-w-0 flex-1 flex-col bg-[#0b141a]`}>
           {contact ? (
             <>
-              <header className="flex items-center justify-between border-b border-[#2a3942] bg-[#202c33] px-3 py-3 md:px-5">
+              <header className="flex items-center justify-between bg-[#202c33] px-2 py-2.5 md:px-4">
                 <div className="flex min-w-0 items-center gap-2">
                   <button
-                    className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-xl md:hidden"
+                    className="grid h-10 w-10 place-items-center text-2xl md:hidden"
                     onClick={() => {
                       setActiveId(null);
                       setContact(null);
                     }}
-                    aria-label="Back"
                   >
                     ‹
                   </button>
+                  <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#00a884]/20 text-sm font-semibold text-[#00a884]">
+                    {initials(contact.name, contact.waId)}
+                  </div>
                   <div className="min-w-0">
-                    <p className="truncate font-medium">{contact.name || contact.waId}</p>
-                    <p className="text-xs text-[#8696a0]">+{contact.waId}</p>
+                    <p className="truncate font-medium">{contact.name || `+${contact.waId}`}</p>
+                    <p className="truncate text-xs text-[#8696a0]">
+                      {canFreeText ? `Online window · ${formatRemaining(remaining)}` : "Template only · window closed"}
+                    </p>
                   </div>
                 </div>
-                <div className="ml-2 flex shrink-0 flex-col items-end gap-1 text-[10px] md:flex-row md:items-center md:gap-3 md:text-xs">
-                  <span
-                    className={`rounded-full px-2.5 py-1 ${
-                      canFreeText ? "bg-emerald-500/15 text-emerald-300" : "bg-amber-400/15 text-amber-200"
-                    }`}
+                <div className="flex shrink-0 items-center gap-1">
+                  <button
+                    type="button"
+                    className="grid h-10 w-10 place-items-center rounded-full text-lg disabled:opacity-35"
+                    title="Video"
+                    disabled={!canFreeText || busy}
+                    onClick={() => videoCamRef.current?.click()}
                   >
-                    {canFreeText ? `Service window · ${formatRemaining(remaining)}` : "Window closed · template only"}
-                  </span>
+                    📹
+                  </button>
+                  <a
+                    href={`tel:+${contact.waId}`}
+                    className="grid h-10 w-10 place-items-center rounded-full text-lg"
+                    title="Call this number"
+                  >
+                    📞
+                  </a>
                   <button
                     onClick={toggleOptIn}
-                    className={`rounded-full px-2.5 py-1 ${
+                    className={`mr-1 hidden rounded-full px-2.5 py-1 text-[11px] sm:inline ${
                       contact.optedIn ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300"
                     }`}
                   >
@@ -293,84 +506,210 @@ export default function InboxApp() {
                 </div>
               </header>
 
-              <div className="chat-canvas flex-1 overflow-y-auto px-3 py-4 md:px-6 md:py-5">
-                {contact.messages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={`mb-2 flex ${message.direction === "outbound" ? "justify-end" : "justify-start"}`}
-                  >
-                    <div
-                      className={`max-w-[82%] rounded-lg px-3 py-2 text-sm shadow md:max-w-[70%] ${
-                        message.direction === "outbound"
-                          ? "bg-[#005c4b]"
-                          : "bg-[#202c33]"
-                      }`}
-                    >
-                      <p className="whitespace-pre-wrap">{message.body}</p>
-                      <p className="mt-1 text-right text-[10px] text-white/50">
-                        {timeLabel(message.createdAt)} · {message.status}
-                        {message.errorMessage ? ` · ${message.errorMessage}` : ""}
-                      </p>
+              <div className="chat-canvas flex-1 overflow-y-auto px-3 py-4 md:px-8">
+                {contact.messages.map((message, index) => {
+                  const prev = contact.messages[index - 1];
+                  const showDay = !prev || !sameDay(prev.createdAt, message.createdAt);
+                  return (
+                    <div key={message.id}>
+                      {showDay && (
+                        <p className="mx-auto my-3 w-fit rounded-lg bg-[#182229] px-3 py-1 text-[11px] text-[#8696a0]">
+                          {dayLabel(message.createdAt)}
+                        </p>
+                      )}
+                      <div className={`mb-1 flex ${message.direction === "outbound" ? "justify-end" : "justify-start"}`}>
+                        <div
+                          className={`max-w-[84%] rounded-lg px-2.5 py-1.5 text-[14.5px] shadow md:max-w-[65%] ${
+                            message.direction === "outbound" ? "rounded-tr-none bg-[#005c4b]" : "rounded-tl-none bg-[#202c33]"
+                          }`}
+                        >
+                          <MediaBody message={message} />
+                          <p className="mt-1 flex items-center justify-end gap-1 text-[10px] text-white/45">
+                            {formatClock(message.createdAt)}
+                            {message.direction === "outbound" && <Tick status={message.status} />}
+                          </p>
+                          {message.errorMessage && (
+                            <p className="mt-1 text-[11px] text-rose-200">{message.errorMessage}</p>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
                 <div ref={bottomRef} />
               </div>
 
-              <footer className="border-t border-[#2a3942] bg-[#202c33] p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+              <footer className="bg-[#202c33] px-3 pt-2 pb-[max(0.6rem,env(safe-area-inset-bottom))]">
                 {!canFreeText && (
                   <p className="mb-2 text-xs text-amber-200">
-                    Free chat is locked until this customer messages you. Use an approved template, or wait for their reply.
+                    24-hour window closed. Send an approved template, or wait for the customer to message first.
                   </p>
                 )}
                 {error && <p className="mb-2 text-xs text-rose-300">{error}</p>}
+                {recording && (
+                  <p className="mb-2 flex items-center gap-2 text-sm text-rose-300">
+                    <span className="inline-block h-2.5 w-2.5 animate-pulse rounded-full bg-rose-500" />
+                    Recording voice {Math.floor(recSeconds / 60)}:{String(recSeconds % 60).padStart(2, "0")} · tap 🎤 to send
+                  </p>
+                )}
+                {attachOpen && (
+                  <div className="mb-2 grid grid-cols-3 gap-2 rounded-2xl bg-[#111b21] p-3 text-center text-[11px] text-[#e9edef] sm:grid-cols-6">
+                    <button type="button" disabled={!canFreeText || busy} onClick={() => photoRef.current?.click()}>
+                      🖼️<br />Gallery
+                    </button>
+                    <button type="button" disabled={!canFreeText || busy} onClick={() => cameraRef.current?.click()}>
+                      📷<br />Camera
+                    </button>
+                    <button type="button" disabled={!canFreeText || busy} onClick={() => videoRef.current?.click()}>
+                      🎬<br />Video
+                    </button>
+                    <button type="button" disabled={!canFreeText || busy} onClick={() => videoCamRef.current?.click()}>
+                      📹<br />Record
+                    </button>
+                    <button type="button" disabled={!canFreeText || busy} onClick={() => docRef.current?.click()}>
+                      📄<br />File
+                    </button>
+                    <a href={`tel:+${contact.waId}`} className="text-[#e9edef]">
+                      📞<br />Call
+                    </a>
+                  </div>
+                )}
+                <input
+                  ref={photoRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    event.target.value = "";
+                    if (file) sendFile(file, "image");
+                  }}
+                />
+                <input
+                  ref={cameraRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="hidden"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    event.target.value = "";
+                    if (file) sendFile(file, "image");
+                  }}
+                />
+                <input
+                  ref={videoRef}
+                  type="file"
+                  accept="video/*"
+                  className="hidden"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    event.target.value = "";
+                    if (file) sendFile(file, "video");
+                  }}
+                />
+                <input
+                  ref={videoCamRef}
+                  type="file"
+                  accept="video/*"
+                  capture="environment"
+                  className="hidden"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    event.target.value = "";
+                    if (file) sendFile(file, "video");
+                  }}
+                />
+                <input
+                  ref={docRef}
+                  type="file"
+                  className="hidden"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    event.target.value = "";
+                    if (file) sendFile(file, "document");
+                  }}
+                />
                 <form
-                  className="flex gap-2"
+                  className="flex items-end gap-2"
                   onSubmit={(event) => {
                     event.preventDefault();
                     if (canFreeText) send("text");
                   }}
                 >
-                  <input
+                  <button
+                    type="button"
+                    onClick={() => setAttachOpen((open) => !open)}
+                    className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-[#2a3942] text-xl"
+                    title="Attach"
+                  >
+                    +
+                  </button>
+                  <textarea
+                    ref={inputRef}
+                    rows={1}
                     value={composer}
                     onChange={(event) => setComposer(event.target.value)}
-                    placeholder={canFreeText ? "Type a message" : "Window closed — send a template instead"}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && !event.shiftKey) {
+                        event.preventDefault();
+                        if (canFreeText) send("text");
+                      }
+                    }}
+                    placeholder={canFreeText ? "Type a message" : "Window closed — use a template"}
                     disabled={!canFreeText}
-                    className="flex-1 rounded-lg bg-[#2a3942] px-4 py-3 text-base outline-none placeholder:text-[#8696a0] disabled:opacity-50 md:text-sm"
+                    className="max-h-32 flex-1 resize-none rounded-xl bg-[#2a3942] px-4 py-3 text-base outline-none placeholder:text-[#8696a0] disabled:opacity-50 md:text-sm"
                   />
-                  <button
-                    type="submit"
-                    disabled={busy || !canFreeText}
-                    className="rounded-lg bg-[#00a884] px-5 py-3 text-sm font-semibold text-[#111b21] disabled:opacity-40"
-                  >
-                    Send
-                  </button>
+                  {composer.trim() ? (
+                    <button
+                      type="submit"
+                      disabled={busy || !canFreeText}
+                      className="grid h-12 w-12 place-items-center rounded-full bg-[#00a884] text-lg font-semibold text-[#111b21] disabled:opacity-35"
+                    >
+                      ➤
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={busy || !canFreeText}
+                      onClick={toggleRecording}
+                      className={`grid h-12 w-12 place-items-center rounded-full text-lg ${
+                        recording ? "animate-pulse bg-rose-500" : "bg-[#00a884]"
+                      } text-[#111b21] disabled:opacity-35`}
+                      title="Tap to record voice, tap again to send"
+                    >
+                      🎤
+                    </button>
+                  )}
                 </form>
-                {settings?.templates?.length ? (
-                  <div className="mt-2 flex flex-wrap gap-2">
+                {settings?.templates?.some((item) => item.status === "APPROVED") && (
+                  <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
                     {settings.templates
-                      .filter((t) => t.status === "APPROVED")
-                      .slice(0, 6)
+                      .filter((item) => item.status === "APPROVED")
+                      .slice(0, 8)
                       .map((template) => (
                         <button
                           key={`${template.name}-${template.language}`}
                           disabled={busy || !contact.optedIn}
                           onClick={() => send("template", { templateName: template.name })}
-                          className="rounded-full border border-[#3b4a54] px-3 py-1 text-[11px] text-[#8696a0] hover:text-white disabled:opacity-40"
+                          className="shrink-0 rounded-full border border-[#3b4a54] px-3 py-1 text-[11px] text-[#8696a0] disabled:opacity-40"
                         >
-                          Template: {template.name}
+                          {template.name}
                         </button>
                       ))}
                   </div>
-                ) : null}
+                )}
               </footer>
             </>
           ) : (
-            <div className="grid flex-1 place-items-center bg-[#222e35] text-center">
+            <div className="grid flex-1 place-items-center bg-[#222e35] px-6 text-center">
               <div>
+                <div className="mx-auto mb-4 grid h-16 w-16 place-items-center rounded-2xl bg-[#00a884] text-2xl font-bold text-[#111b21]">
+                  D
+                </div>
                 <p className="text-2xl font-light">Deft WhatsApp Inbox</p>
-                <p className="mt-2 max-w-md text-sm text-[#8696a0]">
-                  Official Meta Cloud API only. No WhatsApp Web scraping, no unofficial bots — that is what gets numbers banned.
+                <p className="mx-auto mt-2 max-w-md text-sm text-[#8696a0]">
+                  Official Cloud API for +44 7882 771582. Select a chat, or wait for a customer message.
                 </p>
               </div>
             </div>
@@ -382,6 +721,7 @@ export default function InboxApp() {
         <SettingsModal
           settings={settings}
           onClose={() => setShowSettings(false)}
+          onLogout={logout}
           onSaved={async () => {
             await loadSettings();
             setShowSettings(false);
@@ -403,36 +743,16 @@ export default function InboxApp() {
   );
 }
 
-function QualityBar({ settings }: { settings: SettingsPayload | null }) {
-  const rating = settings?.health?.quality_rating;
-  return (
-    <div className="border-b border-[#2a3942] px-4 py-3 text-xs text-[#8696a0]">
-      <div className="flex items-center justify-between">
-        <span>{settings?.health?.verified_name || "Cloud API not connected"}</span>
-        <span className="flex items-center gap-1.5">
-          <span className={`h-2 w-2 rounded-full ${qualityColor(rating)}`} />
-          {rating || "NO RATING"}
-        </span>
-      </div>
-      <p className="mt-1">
-        {settings?.health?.display_phone_number || "Add credentials in Settings"}
-        {settings?.health?.whatsapp_business_manager_messaging_limit
-          ? ` · ${settings.health.whatsapp_business_manager_messaging_limit}`
-          : ""}
-      </p>
-      {settings?.apiError && <p className="mt-1 text-rose-300">{settings.apiError}</p>}
-    </div>
-  );
-}
-
 function SettingsModal({
   settings,
   onClose,
   onSaved,
+  onLogout,
 }: {
   settings: SettingsPayload | null;
   onClose: () => void;
   onSaved: () => Promise<void>;
+  onLogout: () => void;
 }) {
   const [form, setForm] = useState({
     accessToken: "",
@@ -465,76 +785,49 @@ function SettingsModal({
   }
 
   return (
-    <Modal title="Connect WhatsApp Cloud API" onClose={onClose}>
-      <p className="mb-4 text-sm text-[#8696a0]">
-        Get these from Meta Developer Console → your app → WhatsApp → API Setup. This inbox talks only to
-        graph.facebook.com. Unofficial WhatsApp libraries are not used.
-      </p>
+    <Modal title="Inbox settings" onClose={onClose}>
+      <div className="mb-4 rounded-xl bg-[#0b141a] p-3 text-xs text-[#8696a0]">
+        <p>
+          Quality: <b className="text-white">{settings?.health?.quality_rating || "n/a"}</b>
+          {settings?.health?.verified_name ? ` · ${settings.health.verified_name}` : ""}
+        </p>
+        <p className="mt-1">{settings?.health?.display_phone_number || "Number not connected yet"}</p>
+        {settings?.apiError && <p className="mt-1 text-rose-300">{settings.apiError}</p>}
+      </div>
       <form className="grid gap-3" onSubmit={save}>
         <Field
-          label="Permanent access token"
+          label="Access token"
           value={form.accessToken}
-          placeholder={settings?.config.hasAccessToken ? "Token saved — paste to replace" : "EAA..."}
+          placeholder={settings?.config.hasAccessToken ? "Saved — paste to replace" : "EAA..."}
           onChange={(value) => setForm({ ...form, accessToken: value })}
         />
+        <Field label="Phone number ID" value={form.phoneNumberId} onChange={(value) => setForm({ ...form, phoneNumberId: value })} />
+        <Field label="WABA ID" value={form.wabaId} onChange={(value) => setForm({ ...form, wabaId: value })} />
         <Field
-          label="Phone number ID"
-          value={form.phoneNumberId}
-          onChange={(value) => setForm({ ...form, phoneNumberId: value })}
-        />
-        <Field
-          label="WhatsApp Business Account ID"
-          value={form.wabaId}
-          onChange={(value) => setForm({ ...form, wabaId: value })}
-        />
-        <Field
-          label="App secret (webhook signature)"
+          label="App secret"
           value={form.appSecret}
-          placeholder={settings?.config.hasAppSecret ? "Secret saved — paste to replace" : ""}
+          placeholder={settings?.config.hasAppSecret ? "Saved — paste to replace" : ""}
           onChange={(value) => setForm({ ...form, appSecret: value })}
         />
-        <Field
-          label="Webhook verify token"
-          value={form.verifyToken}
-          onChange={(value) => setForm({ ...form, verifyToken: value })}
-        />
-        <Field
-          label="Daily new-template recipient cap"
-          value={String(form.dailyNewRecipientCap)}
-          onChange={(value) =>
-            setForm({ ...form, dailyNewRecipientCap: Number(value) || 40 })
-          }
-        />
+        <Field label="Webhook verify token" value={form.verifyToken} onChange={(value) => setForm({ ...form, verifyToken: value })} />
         <p className="rounded-lg bg-[#0b141a] p-3 text-xs text-[#8696a0]">
-          Webhook callback URL (must be HTTPS, e.g. via ngrok):
+          Webhook callback
           <br />
-          <code className="text-[#00a884]">https://YOUR-DOMAIN/api/webhooks/whatsapp</code>
-          <br />
-          Subscribe the <code>messages</code> field on <code>whatsapp_business_account</code>.
+          <code className="text-[#00a884]">https://whats-app-apiii-production.up.railway.app/api/webhooks/whatsapp</code>
         </p>
         {error && <p className="text-xs text-rose-300">{error}</p>}
-        <div className="flex justify-end gap-2">
+        <div className="flex flex-wrap justify-end gap-2">
+          <button type="button" onClick={onLogout} className="rounded-lg px-4 py-2 text-sm text-rose-300">
+            Log out
+          </button>
           <button type="button" onClick={onClose} className="rounded-lg px-4 py-2 text-sm">
             Close
           </button>
-          <button
-            disabled={saving}
-            className="rounded-lg bg-[#00a884] px-4 py-2 text-sm font-semibold text-[#111b21]"
-          >
-            Save & connect
+          <button disabled={saving} className="rounded-lg bg-[#00a884] px-4 py-2 text-sm font-semibold text-[#111b21]">
+            Save
           </button>
         </div>
       </form>
-      {settings?.recentEvents?.length ? (
-        <div className="mt-4 border-t border-[#2a3942] pt-3">
-          <p className="mb-2 text-xs uppercase tracking-wide text-[#8696a0]">Safety log</p>
-          {settings.recentEvents.map((event) => (
-            <p key={event.id} className="mb-1 text-xs text-[#8696a0]">
-              {event.kind}: {event.detail}
-            </p>
-          ))}
-        </div>
-      ) : null}
     </Modal>
   );
 }
@@ -552,9 +845,11 @@ function NewChatModal({
   const [name, setName] = useState("");
   const [templateName, setTemplateName] = useState(templates[0]?.name || "hello_world");
   const [error, setError] = useState<string | null>(null);
-  const approved = templates.filter((t) => t.status === "APPROVED");
+  const [busy, setBusy] = useState(false);
+  const approved = templates.filter((item) => item.status === "APPROVED");
 
   async function create() {
+    setBusy(true);
     setError(null);
     const contactRes = await fetch("/api/contacts", {
       method: "POST",
@@ -564,6 +859,7 @@ function NewChatModal({
     const contactData = await contactRes.json();
     if (!contactRes.ok) {
       setError(contactData.error);
+      setBusy(false);
       return;
     }
     const sendRes = await fetch("/api/messages", {
@@ -574,18 +870,20 @@ function NewChatModal({
     const sendData = await sendRes.json();
     if (!sendRes.ok) {
       setError(sendData.error);
+      setBusy(false);
       return;
     }
     await onCreated(contactData.contact.id);
+    setBusy(false);
   }
 
   return (
-    <Modal title="Start with an approved template" onClose={onClose}>
+    <Modal title="New conversation" onClose={onClose}>
       <p className="mb-4 text-sm text-[#8696a0]">
-        You cannot cold-message with free text. First contact must be an approved template, and the person must have opted in.
+        First outbound message must be an approved template after the customer has opted in.
       </p>
       <div className="grid gap-3">
-        <Field label="Customer number with country code" value={waId} placeholder="923001234567" onChange={setWaId} />
+        <Field label="Customer number" value={waId} placeholder="447..." onChange={setWaId} />
         <Field label="Name" value={name} onChange={setName} />
         <label className="grid gap-1 text-xs text-[#8696a0]">
           Template
@@ -594,9 +892,9 @@ function NewChatModal({
             onChange={(event) => setTemplateName(event.target.value)}
             className="rounded-lg bg-[#2a3942] px-3 py-2 text-sm text-white outline-none"
           >
-            {(approved.length ? approved : [{ name: "hello_world", language: "en_US" }]).map((t) => (
-              <option key={t.name} value={t.name}>
-                {t.name}
+            {(approved.length ? approved : [{ name: "hello_world", language: "en_US" }]).map((item) => (
+              <option key={item.name} value={item.name}>
+                {item.name}
               </option>
             ))}
           </select>
@@ -606,8 +904,12 @@ function NewChatModal({
           <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm">
             Cancel
           </button>
-          <button onClick={create} className="rounded-lg bg-[#00a884] px-4 py-2 text-sm font-semibold text-[#111b21]">
-            Record opt-in & send
+          <button
+            disabled={busy}
+            onClick={create}
+            className="rounded-lg bg-[#00a884] px-4 py-2 text-sm font-semibold text-[#111b21]"
+          >
+            Send template
           </button>
         </div>
       </div>
@@ -625,11 +927,11 @@ function Modal({
   children: React.ReactNode;
 }) {
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4">
-      <div className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-2xl border border-[#2a3942] bg-[#111b21] p-5 shadow-2xl">
+    <div className="fixed inset-0 z-50 grid place-items-end bg-black/60 p-0 md:place-items-center md:p-4">
+      <div className="max-h-[92dvh] w-full max-w-xl overflow-y-auto rounded-t-3xl border border-[#2a3942] bg-[#111b21] p-5 shadow-2xl md:rounded-2xl">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-lg font-semibold">{title}</h2>
-          <button onClick={onClose} className="text-[#8696a0]">
+          <button onClick={onClose} className="text-sm text-[#8696a0]">
             Close
           </button>
         </div>

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { markRead } from "@/lib/whatsapp";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +25,14 @@ export async function GET(
     data: { unreadCount: 0 },
   });
 
-  return NextResponse.json({ contact });
+  const lastInbound = [...contact.messages]
+    .reverse()
+    .find((message) => message.direction === "inbound" && message.wamid);
+  if (lastInbound?.wamid) {
+    markRead(lastInbound.wamid).catch(() => {});
+  }
+
+  return NextResponse.json({ contact: { ...contact, unreadCount: 0 } });
 }
 
 export async function PATCH(

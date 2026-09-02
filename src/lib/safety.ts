@@ -56,7 +56,7 @@ export function checkPairRate(lastOutboundAt?: Date | string | null): SafetyDeci
 }
 
 export function checkSend(input: {
-  type: "text" | "template";
+  type: "text" | "template" | "image" | "video" | "audio" | "document";
   body?: string;
   optedIn: boolean;
   blocked: boolean;
@@ -77,37 +77,35 @@ export function checkSend(input: {
   const pair = checkPairRate(input.lastOutboundAt);
   if (!pair.ok) return pair;
 
-  if (input.type === "text") {
-    if (!input.body?.trim()) {
-      return { ok: false, code: "EMPTY", message: "Message is empty." };
-    }
-    if (!windowOpen(input.lastInboundAt)) {
+  if (input.type === "template") {
+    if (!input.optedIn) {
       return {
         ok: false,
-        code: "WINDOW_CLOSED",
+        code: "OPT_IN_REQUIRED",
         message:
-          "24-hour customer service window is closed. Only an approved template can be sent until the customer messages you again.",
+          "WhatsApp policy: the customer must opt in before you send a template. Mark opt-in only if they agreed (form, checkout, or explicit WhatsApp yes).",
+      };
+    }
+    if (input.isNewTemplateRecipient && input.uniqueNewRecipientsToday >= input.dailyCap) {
+      return {
+        ok: false,
+        code: "DAILY_CAP",
+        message: `Local safety cap reached (${input.dailyCap} new template recipients today). Raising volume too fast drops quality rating and can restrict the number.`,
       };
     }
     return { ok: true, message: "ok" };
   }
 
-  if (!input.optedIn) {
+  if (input.type === "text" && !input.body?.trim()) {
+    return { ok: false, code: "EMPTY", message: "Message is empty." };
+  }
+  if (!windowOpen(input.lastInboundAt)) {
     return {
       ok: false,
-      code: "OPT_IN_REQUIRED",
+      code: "WINDOW_CLOSED",
       message:
-        "WhatsApp policy: the customer must opt in before you send a template. Mark opt-in only if they agreed (form, checkout, or explicit WhatsApp yes).",
+        "24-hour customer service window is closed. Only an approved template can be sent until the customer messages you again.",
     };
   }
-
-  if (input.isNewTemplateRecipient && input.uniqueNewRecipientsToday >= input.dailyCap) {
-    return {
-      ok: false,
-      code: "DAILY_CAP",
-      message: `Local safety cap reached (${input.dailyCap} new template recipients today). Raising volume too fast drops quality rating and can restrict the number.`,
-    };
-  }
-
   return { ok: true, message: "ok" };
 }

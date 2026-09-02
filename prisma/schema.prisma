@@ -36,6 +36,9 @@ model Message {
   type         String
   body         String?
   templateName String?
+  mediaId      String?
+  mimeType     String?
+  fileName     String?
   status       String   @default("queued")
   errorCode    String?
   errorMessage String?
