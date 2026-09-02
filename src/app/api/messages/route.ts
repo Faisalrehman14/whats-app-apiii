@@ -1,13 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getConfig } from "@/lib/config";
+import { findContactByWaId } from "@/lib/contacts";
+import { normalizeWaId } from "@/lib/phone";
 import { checkSend } from "@/lib/safety";
 import { sendTemplate, sendText, WhatsAppApiError } from "@/lib/whatsapp";
 
 export const dynamic = "force-dynamic";
 
 function normalizePhone(input: string) {
-  return input.replace(/[^\d+]/g, "");
+  return normalizeWaId(input);
 }
 
 export async function POST(request: NextRequest) {
@@ -43,12 +45,8 @@ export async function POST(request: NextRequest) {
     },
   });
 
-  let contact = await prisma.contact.findUnique({ where: { waId: to.replace(/^\+/, "") } });
-  if (!contact) {
-    contact = await prisma.contact.findUnique({ where: { waId: to } });
-  }
-
-  const waId = contact?.waId || to.replace(/^\+/, "");
+  let contact = await findContactByWaId(to);
+  const waId = contact?.waId || to;
   const isNewTemplateRecipient = type === "template" && !contact?.lastOutboundAt;
 
   const decision = checkSend({
@@ -83,14 +81,24 @@ export async function POST(request: NextRequest) {
         : await sendText(to, body.text || "");
 
     const wamid = result.messages?.[0]?.id;
-    const resolvedWaId = result.contacts?.[0]?.wa_id || waId;
+    const resolvedWaId = normalizeWaId(result.contacts?.[0]?.wa_id || waId);
+    if (contact && contact.waId !== resolvedWaId) {
+      try {
+        await prisma.contact.update({
+          where: { id: contact.id },
+          data: { waId: resolvedWaId },
+        });
+      } catch {
+        // Canonical row already exists; keep sending against it.
+      }
+    }
 
     const savedContact = await prisma.contact.upsert({
       where: { waId: resolvedWaId },
       update: { lastOutboundAt: new Date() },
       create: {
         waId: resolvedWaId,
-        name: resolvedWaId,
+        name: contact?.name || resolvedWaId,
         lastOutboundAt: new Date(),
         optedIn: type === "template" ? Boolean(contact?.optedIn) : false,
       },

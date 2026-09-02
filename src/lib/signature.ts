@@ -1,13 +1,21 @@
 import crypto from "node:crypto";
 
-export function verifySignature(rawBody: string, header: string | null, appSecret: string) {
-  if (!appSecret) return true;
+export function verifySignature(
+  raw: string | Buffer,
+  header: string | null,
+  secrets: string | string[],
+) {
+  const keys = [...new Set((Array.isArray(secrets) ? secrets : [secrets]).filter(Boolean))];
+  if (!keys.length) return true;
   if (!header?.startsWith("sha256=")) return false;
-  const expected = crypto.createHmac("sha256", appSecret).update(rawBody).digest("hex");
   const actual = header.slice("sha256=".length);
-  try {
-    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(actual));
-  } catch {
-    return false;
-  }
+  const body = Buffer.isBuffer(raw) ? raw : Buffer.from(raw, "utf8");
+  return keys.some((secret) => {
+    const expected = crypto.createHmac("sha256", secret).update(body).digest("hex");
+    try {
+      return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(actual));
+    } catch {
+      return false;
+    }
+  });
 }

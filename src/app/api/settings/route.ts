@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getConfig, isConfigured, saveConfig, type AppConfig } from "@/lib/config";
-import { getPhoneHealth, listTemplates, WhatsAppApiError } from "@/lib/whatsapp";
+import { webhookPublicUrl } from "@/lib/phone";
+import { ensureWebhookSubscription, getPhoneHealth, listTemplates, WhatsAppApiError } from "@/lib/whatsapp";
 
 export const dynamic = "force-dynamic";
 
@@ -10,6 +11,7 @@ export async function GET() {
   let health = null;
   let templates: Awaited<ReturnType<typeof listTemplates>> = [];
   let apiError: string | null = null;
+  let webhook = null;
 
   if (isConfigured(config)) {
     try {
@@ -22,8 +24,18 @@ export async function GET() {
     } catch {
       templates = [];
     }
+    try {
+      webhook = await ensureWebhookSubscription();
+    } catch (error) {
+      webhook = {
+        url: webhookPublicUrl(),
+        subscribed: false,
+        error: (error as Error).message,
+      };
+    }
   }
 
+  const lastWebhook = await prisma.setting.findUnique({ where: { key: "lastWebhookAt" } });
   const recentEvents = await prisma.auditEvent.findMany({
     orderBy: { createdAt: "desc" },
     take: 12,
@@ -41,6 +53,8 @@ export async function GET() {
       hasAppSecret: Boolean(config.appSecret),
     },
     health,
+    webhook,
+    lastWebhookAt: lastWebhook?.value || null,
     templates,
     apiError,
     recentEvents,

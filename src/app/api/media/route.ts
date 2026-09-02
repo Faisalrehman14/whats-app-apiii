@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getConfig } from "@/lib/config";
+import { findContactByWaId } from "@/lib/contacts";
+import { normalizeWaId } from "@/lib/phone";
 import { prepareWhatsAppMedia } from "@/lib/media-convert";
 import { checkSend } from "@/lib/safety";
 import { sendMedia, uploadMedia, WhatsAppApiError } from "@/lib/whatsapp";
@@ -22,7 +24,7 @@ function kindFromMime(mime: string, hint?: string): Kind {
 
 export async function POST(request: NextRequest) {
   const form = await request.formData();
-  const to = String(form.get("to") || "").replace(/[^\d+]/g, "");
+  const to = normalizeWaId(String(form.get("to") || ""));
   const caption = String(form.get("caption") || "");
   const hint = String(form.get("kind") || "");
   const file = form.get("file");
@@ -37,9 +39,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Connect Cloud API credentials first." }, { status: 400 });
   }
 
-  const contact =
-    (await prisma.contact.findUnique({ where: { waId: to.replace(/^\+/, "") } })) ||
-    (await prisma.contact.findUnique({ where: { waId: to } }));
+  const contact = await findContactByWaId(to);
 
   const decision = checkSend({
     type: kind,
@@ -64,7 +64,7 @@ export async function POST(request: NextRequest) {
       filename: prepared.filename,
     });
     const wamid = result.messages?.[0]?.id;
-    const waId = result.contacts?.[0]?.wa_id || to.replace(/^\+/, "");
+    const waId = normalizeWaId(result.contacts?.[0]?.wa_id || to);
     const saved = await prisma.contact.upsert({
       where: { waId },
       update: { lastOutboundAt: new Date() },

@@ -22,19 +22,19 @@ const KEYS = [
 
 function envConfig(map: Record<string, string> = {}): AppConfig {
   return {
-    accessToken: map.accessToken || process.env.WHATSAPP_ACCESS_TOKEN || "",
+    accessToken: process.env.WHATSAPP_ACCESS_TOKEN || map.accessToken || "",
     phoneNumberId:
-      map.phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID || "",
-    wabaId: map.wabaId || process.env.WHATSAPP_WABA_ID || "",
-    appSecret: map.appSecret || process.env.WHATSAPP_APP_SECRET || "",
+      process.env.WHATSAPP_PHONE_NUMBER_ID || map.phoneNumberId || "",
+    wabaId: process.env.WHATSAPP_WABA_ID || map.wabaId || "",
+    appSecret: process.env.WHATSAPP_APP_SECRET || map.appSecret || "",
     verifyToken:
-      map.verifyToken ||
       process.env.WHATSAPP_VERIFY_TOKEN ||
+      map.verifyToken ||
       "deft-decor-webhook",
     graphVersion:
       map.graphVersion || process.env.WHATSAPP_GRAPH_VERSION || "v23.0",
     dailyNewRecipientCap: Number(
-      map.dailyNewRecipientCap || process.env.DAILY_NEW_RECIPIENT_CAP || 40,
+      process.env.DAILY_NEW_RECIPIENT_CAP || map.dailyNewRecipientCap || 40,
     ),
   };
 }

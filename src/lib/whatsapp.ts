@@ -1,4 +1,5 @@
 import { getConfig } from "@/lib/config";
+import { webhookPublicUrl } from "@/lib/phone";
 
 export class WhatsAppApiError extends Error {
   constructor(
@@ -271,4 +272,90 @@ export function extractInboundText(message: Record<string, unknown>): ParsedInbo
     return { type, body: reaction?.emoji ?? "[reaction]" };
   }
   return { type, body: `[${type}]` };
+}
+
+export type WebhookHealth = {
+  url: string;
+  subscribed: boolean;
+  overrideUrl?: string;
+  phoneOverrideUrl?: string;
+  error?: string;
+};
+
+let lastEnsure = 0;
+let lastHealth: WebhookHealth | null = null;
+
+export async function ensureWebhookSubscription(): Promise<WebhookHealth> {
+  if (lastHealth && Date.now() - lastEnsure < (lastHealth.error ? 30_000 : 5 * 60 * 1000)) {
+    return lastHealth;
+  }
+  const config = await getConfig();
+  const url = webhookPublicUrl();
+  const health: WebhookHealth = { url, subscribed: false };
+  if (!config.accessToken || !config.wabaId) {
+    health.error = "Missing token or WABA ID";
+    lastHealth = health;
+    lastEnsure = Date.now();
+    return health;
+  }
+  try {
+    await graph(`${config.wabaId}/subscribed_apps`, {
+      method: "POST",
+      body: JSON.stringify({
+        override_callback_uri: url,
+        verify_token: config.verifyToken,
+      }),
+    });
+    health.subscribed = true;
+    health.overrideUrl = url;
+  } catch (error) {
+    try {
+      await graph(`${config.wabaId}/subscribed_apps`, { method: "POST" });
+      health.subscribed = true;
+    } catch (inner) {
+      health.error = (inner as WhatsAppApiError).message || (error as WhatsAppApiError).message;
+    }
+  }
+
+  if (config.phoneNumberId) {
+    try {
+      await graph(config.phoneNumberId, {
+        method: "POST",
+        body: JSON.stringify({
+          webhook_configuration: {
+            override_callback_uri: url,
+            verify_token: config.verifyToken,
+          },
+        }),
+      });
+      health.phoneOverrideUrl = url;
+    } catch (error) {
+      const message = (error as WhatsAppApiError).message;
+      health.error = health.error ? `${health.error}; ${message}` : message;
+    }
+  }
+
+  if (config.phoneNumberId) {
+    try {
+      const current = await graph<{
+        webhook_configuration?: {
+          phone_number?: string;
+          whatsapp_business_account?: string;
+          application?: string;
+        };
+      }>(config.phoneNumberId, { query: { fields: "webhook_configuration" } });
+      health.phoneOverrideUrl =
+        current.webhook_configuration?.phone_number || health.phoneOverrideUrl;
+      health.overrideUrl =
+        current.webhook_configuration?.whatsapp_business_account ||
+        current.webhook_configuration?.application ||
+        health.overrideUrl;
+    } catch {
+      // Phone field is optional; subscription POST is the important part.
+    }
+  }
+
+  lastHealth = health;
+  lastEnsure = Date.now();
+  return health;
 }

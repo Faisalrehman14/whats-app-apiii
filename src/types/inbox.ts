@@ -51,6 +51,14 @@ export type SettingsPayload = {
     whatsapp_business_manager_messaging_limit?: string;
     throughput?: { level?: string };
   } | null;
+  webhook?: {
+    url: string;
+    subscribed: boolean;
+    overrideUrl?: string;
+    phoneOverrideUrl?: string;
+    error?: string;
+  } | null;
+  lastWebhookAt?: string | null;
   templates: { name: string; status: string; category: string; language: string }[];
   apiError: string | null;
   recentEvents: { id: string; kind: string; detail: string; createdAt: string }[];

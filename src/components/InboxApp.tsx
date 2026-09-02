@@ -474,7 +474,9 @@ export default function InboxApp() {
                   <div className="min-w-0">
                     <p className="truncate font-medium">{contact.name || `+${contact.waId}`}</p>
                     <p className="truncate text-xs text-[#8696a0]">
-                      {canFreeText ? `Online window · ${formatRemaining(remaining)}` : "Template only · window closed"}
+                      {canFreeText
+                        ? `Can reply · ${formatRemaining(remaining)}`
+                        : "Waiting for their WhatsApp message"}
                     </p>
                   </div>
                 </div>
@@ -542,7 +544,7 @@ export default function InboxApp() {
               <footer className="bg-[#202c33] px-3 pt-2 pb-[max(0.6rem,env(safe-area-inset-bottom))]">
                 {!canFreeText && (
                   <p className="mb-2 text-xs text-amber-200">
-                    24-hour window closed. Send an approved template, or wait for the customer to message first.
+                    24-hour window closed. Ask them to message +44 7882 771582, then this chat will open.
                   </p>
                 )}
                 {error && <p className="mb-2 text-xs text-rose-300">{error}</p>}
@@ -792,6 +794,16 @@ function SettingsModal({
           {settings?.health?.verified_name ? ` · ${settings.health.verified_name}` : ""}
         </p>
         <p className="mt-1">{settings?.health?.display_phone_number || "Number not connected yet"}</p>
+        <p className="mt-2">
+          Inbound webhook:{" "}
+          <b className={settings?.webhook?.subscribed ? "text-emerald-300" : "text-rose-300"}>
+            {settings?.webhook?.subscribed ? "subscribed" : "not subscribed"}
+          </b>
+        </p>
+        <p className="mt-1">
+          Last customer webhook: {settings?.lastWebhookAt ? new Date(settings.lastWebhookAt).toLocaleString() : "never — friend messages will not appear"}
+        </p>
+        {settings?.webhook?.error && <p className="mt-1 text-rose-300">{settings.webhook.error}</p>}
         {settings?.apiError && <p className="mt-1 text-rose-300">{settings.apiError}</p>}
       </div>
       <form className="grid gap-3" onSubmit={save}>

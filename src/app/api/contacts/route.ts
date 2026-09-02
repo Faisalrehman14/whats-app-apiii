@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { normalizeWaId } from "@/lib/phone";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
   const body = (await request.json()) as { waId?: string; name?: string };
-  const waId = (body.waId || "").replace(/[^\d]/g, "");
+  const waId = normalizeWaId(body.waId || "");
   if (!waId) {
     return NextResponse.json({ error: "Phone number required" }, { status: 400 });
   }

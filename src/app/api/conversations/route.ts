@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
+import { canonicalizeContacts } from "@/lib/contacts";
 import { prisma } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
+  await canonicalizeContacts().catch(() => {});
   const contacts = await prisma.contact.findMany({
     orderBy: { updatedAt: "desc" },
     include: {
