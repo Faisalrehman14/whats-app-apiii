@@ -36,6 +36,7 @@ export async function GET() {
   }
 
   const lastWebhook = await prisma.setting.findUnique({ where: { key: "lastWebhookAt" } });
+  const lastReject = await prisma.setting.findUnique({ where: { key: "lastWebhookRejectAt" } });
   const recentEvents = await prisma.auditEvent.findMany({
     orderBy: { createdAt: "desc" },
     take: 12,
@@ -55,6 +56,7 @@ export async function GET() {
     health,
     webhook,
     lastWebhookAt: lastWebhook?.value || null,
+    lastWebhookRejectAt: lastReject?.value || null,
     templates,
     apiError,
     recentEvents,

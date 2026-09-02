@@ -107,6 +107,11 @@ export type PhoneHealth = {
   quality_rating?: string;
   code_verification_status?: string;
   platform_type?: string;
+  status?: string;
+  name_status?: string;
+  account_mode?: string;
+  can_send_message?: string;
+  health_error?: string;
   whatsapp_business_manager_messaging_limit?: string;
   throughput?: { level?: string };
 };
@@ -114,12 +119,25 @@ export type PhoneHealth = {
 export async function getPhoneHealth(): Promise<PhoneHealth | null> {
   const config = await getConfig();
   if (!config.phoneNumberId) return null;
-  const health = await graph<PhoneHealth>(config.phoneNumberId, {
-    query: {
-      fields:
-        "verified_name,display_phone_number,quality_rating,code_verification_status,platform_type,throughput",
+  const health = await graph<PhoneHealth & { health_status?: HealthStatusNode }>(
+    config.phoneNumberId,
+    {
+      query: {
+        fields:
+          "verified_name,display_phone_number,quality_rating,code_verification_status,platform_type,throughput,status,name_status,health_status",
+      },
     },
-  });
+  );
+  health.can_send_message = health.health_status?.can_send_message;
+  health.health_error = firstHealthError(health.health_status);
+  try {
+    const extra = await graph<{ account_mode?: string }>(config.phoneNumberId, {
+      query: { fields: "account_mode" },
+    });
+    health.account_mode = extra.account_mode;
+  } catch {
+    // Not present on every Graph version.
+  }
   try {
     const limits = await graph<{ whatsapp_business_manager_messaging_limit?: string }>(
       config.phoneNumberId,
@@ -131,6 +149,27 @@ export async function getPhoneHealth(): Promise<PhoneHealth | null> {
     // Field can live on the WABA; phone fetch still succeeds without it.
   }
   return health;
+}
+
+type HealthStatusNode = {
+  can_send_message?: string;
+  entities?: {
+    entity_type?: string;
+    can_send_message?: string;
+    errors?: { error_description?: string; possible_solution?: string }[];
+  }[];
+};
+
+function firstHealthError(node?: HealthStatusNode) {
+  for (const entity of node?.entities ?? []) {
+    const err = entity.errors?.[0];
+    if (err?.error_description) {
+      return `${entity.entity_type || "node"}: ${err.error_description}${
+        err.possible_solution ? ` (${err.possible_solution})` : ""
+      }`;
+    }
+  }
+  return undefined;
 }
 
 export type WabaTemplate = {
@@ -277,10 +316,58 @@ export function extractInboundText(message: Record<string, unknown>): ParsedInbo
 export type WebhookHealth = {
   url: string;
   subscribed: boolean;
+  messagesField?: boolean;
   overrideUrl?: string;
   phoneOverrideUrl?: string;
   error?: string;
 };
+
+function appId() {
+  return process.env.WHATSAPP_APP_ID || "1973647133097539";
+}
+
+async function subscribeAppWebhookFields(health: WebhookHealth) {
+  const config = await getConfig();
+  if (!config.appSecret) {
+    health.error = health.error || "App secret missing — Meta cannot sign inbound webhooks";
+    return;
+  }
+  const token = `${appId()}|${config.appSecret}`;
+  const endpoint = `https://graph.facebook.com/${config.graphVersion}/${appId()}/subscriptions`;
+  const body = new URLSearchParams({
+    object: "whatsapp_business_account",
+    callback_url: health.url,
+    verify_token: config.verifyToken,
+    fields:
+      "messages,message_template_status_update,account_update,phone_number_quality_update,phone_number_name_update",
+    access_token: token,
+  });
+  const res = await fetch(endpoint, { method: "POST", body, cache: "no-store" });
+  const json = (await res.json().catch(() => null)) as
+    | { success?: boolean; error?: { message?: string } }
+    | null;
+  if (!res.ok) {
+    const message = json?.error?.message || `App webhook subscribe ${res.status}`;
+    health.error = health.error ? `${health.error}; ${message}` : message;
+    return;
+  }
+  const list = await fetch(endpoint, {
+    headers: { Authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  const listed = (await list.json().catch(() => null)) as
+    | {
+        data?: {
+          object?: string;
+          callback_url?: string;
+          fields?: { name?: string }[];
+        }[];
+      }
+    | null;
+  const wa = listed?.data?.find((item) => item.object === "whatsapp_business_account");
+  health.messagesField = Boolean(wa?.fields?.some((field) => field.name === "messages"));
+  if (wa?.callback_url) health.overrideUrl = health.overrideUrl || wa.callback_url;
+}
 
 let lastEnsure = 0;
 let lastHealth: WebhookHealth | null = null;
@@ -353,6 +440,13 @@ export async function ensureWebhookSubscription(): Promise<WebhookHealth> {
     } catch {
       // Phone field is optional; subscription POST is the important part.
     }
+  }
+
+  try {
+    await subscribeAppWebhookFields(health);
+  } catch (error) {
+    const message = (error as Error).message;
+    health.error = health.error ? `${health.error}; ${message}` : message;
   }
 
   lastHealth = health;

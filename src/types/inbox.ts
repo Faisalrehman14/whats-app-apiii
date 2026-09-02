@@ -50,15 +50,24 @@ export type SettingsPayload = {
     quality_rating?: string;
     whatsapp_business_manager_messaging_limit?: string;
     throughput?: { level?: string };
+    status?: string;
+    name_status?: string;
+    account_mode?: string;
+    can_send_message?: string;
+    health_error?: string;
+    code_verification_status?: string;
+    platform_type?: string;
   } | null;
   webhook?: {
     url: string;
     subscribed: boolean;
+    messagesField?: boolean;
     overrideUrl?: string;
     phoneOverrideUrl?: string;
     error?: string;
   } | null;
   lastWebhookAt?: string | null;
+  lastWebhookRejectAt?: string | null;
   templates: { name: string; status: string; category: string; language: string }[];
   apiError: string | null;
   recentEvents: { id: string; kind: string; detail: string; createdAt: string }[];

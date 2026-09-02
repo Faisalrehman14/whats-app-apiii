@@ -12,10 +12,12 @@ export async function GET(request: NextRequest) {
   const mode = request.nextUrl.searchParams.get("hub.mode");
   const token = request.nextUrl.searchParams.get("hub.verify_token");
   const challenge = request.nextUrl.searchParams.get("hub.challenge");
-  const expected =
-    process.env.WHATSAPP_VERIFY_TOKEN || "deft-decor-webhook";
+  const config = await getConfig();
+  const expected = new Set(
+    [process.env.WHATSAPP_VERIFY_TOKEN, config.verifyToken, "deft-decor-webhook"].filter(Boolean),
+  );
 
-  if (mode === "subscribe" && token === expected && challenge) {
+  if (mode === "subscribe" && token && expected.has(token) && challenge) {
     return new NextResponse(challenge, { status: 200 });
   }
   return NextResponse.json({ error: "Verification failed" }, { status: 403 });
@@ -50,6 +52,13 @@ export async function POST(request: NextRequest) {
 
   if (!verifySignature(buf, signature, secrets)) {
     console.error("WhatsApp webhook signature rejected");
+    await prisma.setting
+      .upsert({
+        where: { key: "lastWebhookRejectAt" },
+        update: { value: new Date().toISOString() },
+        create: { key: "lastWebhookRejectAt", value: new Date().toISOString() },
+      })
+      .catch(() => {});
     return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
   }
 

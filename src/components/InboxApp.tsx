@@ -399,6 +399,14 @@ export default function InboxApp() {
               Install on phone: Chrome ⋮ → Add to Home screen. Tap to hide.
             </button>
           )}
+          {settings && !settings.lastWebhookAt && (
+            <div className="mx-4 mb-2 rounded-xl bg-rose-500/15 px-3 py-2 text-left text-xs text-rose-200">
+              WhatsApp 1 tick = message Deft Inbox tak nahi pohancha. Number sirf{" "}
+              <b>+44 7882 771582</b> hai. Meta app Live honi chahiye, aapka WhatsApp Tester/Admin
+              hona chahiye, UK SIM par WhatsApp app khuli nahi honi chahiye, aur Payment method
+              add hona chahiye. Settings mein webhook status dekho.
+            </div>
+          )}
 
           <div className="px-4 pb-3">
             <input
@@ -711,7 +719,9 @@ export default function InboxApp() {
                 </div>
                 <p className="text-2xl font-light">Deft WhatsApp Inbox</p>
                 <p className="mx-auto mt-2 max-w-md text-sm text-[#8696a0]">
-                  Official Cloud API for +44 7882 771582. Select a chat, or wait for a customer message.
+                  Official Cloud API for +44 7882 771582. Apne personal WhatsApp se isi UK number
+                  par message bhejo. 2 ticks aayein tabhi inbox mein chat dikhegi. 1 tick matlab
+                  Meta ne message business number tak deliver nahi kiya.
                 </p>
               </div>
             </div>
@@ -794,15 +804,36 @@ function SettingsModal({
           {settings?.health?.verified_name ? ` · ${settings.health.verified_name}` : ""}
         </p>
         <p className="mt-1">{settings?.health?.display_phone_number || "Number not connected yet"}</p>
+        <p className="mt-1">
+          Account: {settings?.health?.account_mode || settings?.health?.status || "n/a"}
+          {settings?.health?.can_send_message ? ` · send ${settings.health.can_send_message}` : ""}
+        </p>
+        {settings?.health?.health_error && (
+          <p className="mt-1 text-rose-300">{settings.health.health_error}</p>
+        )}
         <p className="mt-2">
           Inbound webhook:{" "}
           <b className={settings?.webhook?.subscribed ? "text-emerald-300" : "text-rose-300"}>
             {settings?.webhook?.subscribed ? "subscribed" : "not subscribed"}
           </b>
+          {settings?.webhook?.messagesField === false
+            ? " · messages field OFF"
+            : settings?.webhook?.messagesField
+              ? " · messages field ON"
+              : ""}
         </p>
         <p className="mt-1">
-          Last customer webhook: {settings?.lastWebhookAt ? new Date(settings.lastWebhookAt).toLocaleString() : "never — friend messages will not appear"}
+          Last customer webhook:{" "}
+          {settings?.lastWebhookAt
+            ? new Date(settings.lastWebhookAt).toLocaleString()
+            : "never — WhatsApp 1 tick means Meta did not deliver"}
         </p>
+        {settings?.lastWebhookRejectAt && (
+          <p className="mt-1 text-amber-200">
+            Meta did POST, but App Secret did not match ({new Date(settings.lastWebhookRejectAt).toLocaleString()}).
+            Railway WHATSAPP_APP_SECRET must be the App Secret from developers.facebook.com.
+          </p>
+        )}
         {settings?.webhook?.error && <p className="mt-1 text-rose-300">{settings.webhook.error}</p>}
         {settings?.apiError && <p className="mt-1 text-rose-300">{settings.apiError}</p>}
       </div>
