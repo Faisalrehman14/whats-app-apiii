@@ -80,6 +80,7 @@ export default function InboxApp() {
   const [showSettings, setShowSettings] = useState(false);
   const [showNew, setShowNew] = useState(false);
   const [tick, setTick] = useState(0);
+  const [installHint, setInstallHint] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const loadConversations = useCallback(async () => {
@@ -102,6 +103,13 @@ export default function InboxApp() {
   }, []);
 
   useEffect(() => {
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => {});
+    }
+    const standalone =
+      window.matchMedia("(display-mode: standalone)").matches ||
+      ("standalone" in navigator && Boolean((navigator as Navigator & { standalone?: boolean }).standalone));
+    setInstallHint(!standalone);
     loadConversations();
     loadSettings();
     const poll = setInterval(() => {
@@ -167,10 +175,14 @@ export default function InboxApp() {
     await loadConversations();
   }
 
+  const chatOpen = Boolean(activeId);
+
   return (
-    <div className="h-screen overflow-hidden bg-[#0b141a] text-[#e9edef]">
+    <div className="h-[100dvh] overflow-hidden bg-[#0b141a] text-[#e9edef]">
       <div className="flex h-full">
-        <aside className="flex w-[360px] shrink-0 flex-col border-r border-[#2a3942] bg-[#111b21]">
+        <aside
+          className={`${chatOpen ? "hidden md:flex" : "flex"} w-full shrink-0 flex-col border-r border-[#2a3942] bg-[#111b21] md:w-[360px]`}
+        >
           <header className="flex items-center justify-between border-b border-[#2a3942] px-4 py-3">
             <div>
               <p className="text-sm font-semibold">Deft Inbox</p>
@@ -191,6 +203,15 @@ export default function InboxApp() {
               </button>
             </div>
           </header>
+
+          {installHint && (
+            <p className="border-b border-[#2a3942] bg-[#005c4b]/40 px-4 py-2 text-xs text-[#d1f4ea]">
+              Phone par app banane ke liye Chrome menu → <b>Add to Home screen</b> (iPhone: Share → Add to Home Screen).
+              <button className="ml-2 underline" onClick={() => setInstallHint(false)}>
+                Hide
+              </button>
+            </p>
+          )}
 
           <QualityBar settings={settings} />
 
@@ -233,15 +254,27 @@ export default function InboxApp() {
           </div>
         </aside>
 
-        <section className="flex min-w-0 flex-1 flex-col">
+        <section className={`${chatOpen ? "flex" : "hidden md:flex"} min-w-0 flex-1 flex-col`}>
           {contact ? (
             <>
-              <header className="flex items-center justify-between border-b border-[#2a3942] bg-[#202c33] px-5 py-3">
-                <div>
-                  <p className="font-medium">{contact.name || contact.waId}</p>
-                  <p className="text-xs text-[#8696a0]">+{contact.waId}</p>
+              <header className="flex items-center justify-between border-b border-[#2a3942] bg-[#202c33] px-3 py-3 md:px-5">
+                <div className="flex min-w-0 items-center gap-2">
+                  <button
+                    className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-xl md:hidden"
+                    onClick={() => {
+                      setActiveId(null);
+                      setContact(null);
+                    }}
+                    aria-label="Back"
+                  >
+                    ‹
+                  </button>
+                  <div className="min-w-0">
+                    <p className="truncate font-medium">{contact.name || contact.waId}</p>
+                    <p className="text-xs text-[#8696a0]">+{contact.waId}</p>
+                  </div>
                 </div>
-                <div className="flex items-center gap-3 text-xs">
+                <div className="ml-2 flex shrink-0 flex-col items-end gap-1 text-[10px] md:flex-row md:items-center md:gap-3 md:text-xs">
                   <span
                     className={`rounded-full px-2.5 py-1 ${
                       canFreeText ? "bg-emerald-500/15 text-emerald-300" : "bg-amber-400/15 text-amber-200"
@@ -260,14 +293,14 @@ export default function InboxApp() {
                 </div>
               </header>
 
-              <div className="chat-canvas flex-1 overflow-y-auto px-6 py-5">
+              <div className="chat-canvas flex-1 overflow-y-auto px-3 py-4 md:px-6 md:py-5">
                 {contact.messages.map((message) => (
                   <div
                     key={message.id}
                     className={`mb-2 flex ${message.direction === "outbound" ? "justify-end" : "justify-start"}`}
                   >
                     <div
-                      className={`max-w-[70%] rounded-lg px-3 py-2 text-sm shadow ${
+                      className={`max-w-[82%] rounded-lg px-3 py-2 text-sm shadow md:max-w-[70%] ${
                         message.direction === "outbound"
                           ? "bg-[#005c4b]"
                           : "bg-[#202c33]"
@@ -284,7 +317,7 @@ export default function InboxApp() {
                 <div ref={bottomRef} />
               </div>
 
-              <footer className="border-t border-[#2a3942] bg-[#202c33] p-3">
+              <footer className="border-t border-[#2a3942] bg-[#202c33] p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
                 {!canFreeText && (
                   <p className="mb-2 text-xs text-amber-200">
                     Free chat is locked until this customer messages you. Use an approved template, or wait for their reply.
@@ -303,7 +336,7 @@ export default function InboxApp() {
                     onChange={(event) => setComposer(event.target.value)}
                     placeholder={canFreeText ? "Type a message" : "Window closed — send a template instead"}
                     disabled={!canFreeText}
-                    className="flex-1 rounded-lg bg-[#2a3942] px-4 py-3 text-sm outline-none placeholder:text-[#8696a0] disabled:opacity-50"
+                    className="flex-1 rounded-lg bg-[#2a3942] px-4 py-3 text-base outline-none placeholder:text-[#8696a0] disabled:opacity-50 md:text-sm"
                   />
                   <button
                     type="submit"
