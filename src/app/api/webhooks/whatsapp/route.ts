@@ -7,12 +7,13 @@ import { extractInboundText } from "@/lib/whatsapp";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
-  const config = await getConfig();
   const mode = request.nextUrl.searchParams.get("hub.mode");
   const token = request.nextUrl.searchParams.get("hub.verify_token");
   const challenge = request.nextUrl.searchParams.get("hub.challenge");
+  const expected =
+    process.env.WHATSAPP_VERIFY_TOKEN || "deft-decor-webhook";
 
-  if (mode === "subscribe" && token === config.verifyToken && challenge) {
+  if (mode === "subscribe" && token === expected && challenge) {
     return new NextResponse(challenge, { status: 200 });
   }
   return NextResponse.json({ error: "Verification failed" }, { status: 403 });

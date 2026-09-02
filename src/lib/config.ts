@@ -20,10 +20,7 @@ const KEYS = [
   "dailyNewRecipientCap",
 ] as const;
 
-export async function getConfig(): Promise<AppConfig> {
-  const rows = await prisma.setting.findMany();
-  const map = Object.fromEntries(rows.map((r) => [r.key, r.value]));
-
+function envConfig(map: Record<string, string> = {}): AppConfig {
   return {
     accessToken: map.accessToken || process.env.WHATSAPP_ACCESS_TOKEN || "",
     phoneNumberId:
@@ -40,6 +37,16 @@ export async function getConfig(): Promise<AppConfig> {
       map.dailyNewRecipientCap || process.env.DAILY_NEW_RECIPIENT_CAP || 40,
     ),
   };
+}
+
+export async function getConfig(): Promise<AppConfig> {
+  try {
+    const rows = await prisma.setting.findMany();
+    const map = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+    return envConfig(map);
+  } catch {
+    return envConfig();
+  }
 }
 
 export async function saveConfig(partial: Partial<AppConfig>) {

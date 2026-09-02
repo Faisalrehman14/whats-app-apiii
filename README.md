@@ -1,6 +1,14 @@
 # Deft Inbox — WhatsApp Cloud API
 
-Official WhatsApp Business inbox. Sends and receives only through Meta Graph API (`graph.facebook.com`). Unofficial WhatsApp Web clients are not used.
+Official WhatsApp Business inbox. Sends and receives only through Meta Graph API (`graph.facebook.com`).
+
+## Live site
+
+https://whats-app-apiii-production.up.railway.app/
+
+- Privacy policy: https://whats-app-apiii-production.up.railway.app/privacy
+- Webhook: https://whats-app-apiii-production.up.railway.app/api/webhooks/whatsapp
+- Verify token: `deft-decor-webhook`
 
 ## Run locally
 
@@ -11,26 +19,20 @@ cp .env.example .env
 npm run dev
 ```
 
-Open http://127.0.0.1:3000 → **Settings** and paste:
+Open http://127.0.0.1:3000 → **Settings** and paste the Cloud API credentials.
 
-- Access token
-- Phone number ID
-- WhatsApp Business Account ID
-- App secret
+## Railway env vars
 
-## Webhook
+Set these in Railway → Variables:
 
-Meta needs HTTPS. In another terminal:
+- `WHATSAPP_ACCESS_TOKEN`
+- `WHATSAPP_PHONE_NUMBER_ID`
+- `WHATSAPP_WABA_ID`
+- `WHATSAPP_APP_SECRET`
+- `WHATSAPP_VERIFY_TOKEN=deft-decor-webhook`
+- `DATABASE_URL=file:./prisma/dev.db`
 
-```bash
-ngrok http 3000
-```
-
-Callback URL: `https://YOUR-NGROK/api/webhooks/whatsapp`  
-Verify token: `deft-decor-webhook`  
-Subscribe to the `messages` field.
-
-## Safety rules (keeps the number off restriction)
+## Safety rules
 
 - Free text only inside the 24-hour customer service window
 - Templates require opt-in
